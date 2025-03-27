@@ -14,6 +14,7 @@
 #include <queue>
 #include <cassert>
 #include <chrono>
+#include <optional>
 // 定义常量
 const std::vector<uint8_t> LEFT_BOUND(32, 0x00);   // LEFT_BOUND 等于32个字节的0构成的bytes
 const std::vector<uint8_t> RIGHT_BOUND(32, 0xFF);  // RIGHT_BOUND 等于32个字节的0xFF构成的bytes
@@ -1040,6 +1041,19 @@ public:
         return 16 + 32 + bit_array.size() + 8;
     }
     
+    int get_size() const {
+        return size;
+    }
+
+    int get_hash_count() const {
+        return hash_count;
+    }
+
+        BloomFilterADS() : size(0), hash_count(0) {
+        // 默认构造一个空的BloomFilterADS
+        bit_array.clear();
+        signature.clear();
+    }
 private:
     // MurmurHash3实现
     uint32_t mmh3_hash(const std::vector<uint8_t>& key, int seed) const {
@@ -1901,6 +1915,827 @@ void test_performance() {
     }
 }
 
+
+/**
+ * 调试BloomFilterADS的函数
+ */
+void debug_bf() {
+    std::random_device rd;
+    std::mt19937 gen(rd());
+    std::uniform_int_distribution<> dis(1, 5000000);
+    
+    std::vector<int> keys = {1, 2, 3};
+    std::unordered_map<std::vector<uint8_t>, std::vector<std::vector<uint8_t>>, VectorHash> sets;
+    
+    // 生成集合
+    std::vector<std::vector<uint8_t>> set1;
+    for (int i = 0; i < 100; i++) {
+        int val = dis(gen);
+        std::vector<uint8_t> e_bytes(sizeof(int));
+        std::memcpy(e_bytes.data(), &val, sizeof(int));
+        set1.push_back(e_bytes);
+    }
+    
+    std::vector<std::vector<uint8_t>> set2;
+    for (int i = 0; i < 1000; i++) {
+        int val = dis(gen);
+        std::vector<uint8_t> e_bytes(sizeof(int));
+        std::memcpy(e_bytes.data(), &val, sizeof(int));
+        set2.push_back(e_bytes);
+    }
+    
+    sets[{1}] = set1;
+    sets[{2}] = set2;
+    
+    std::vector<uint8_t> pk(32, 0x01);
+    
+    // 生成BF版本的ADS
+    std::vector<int> s_values;
+    for (int i = 0; i < 1000; i++) {
+        s_values.push_back(dis(gen));
+    }
+    
+    std::vector<std::vector<uint8_t>> hash_s;
+    hash_s.push_back(LEFT_BOUND);
+    
+    for (int e : s_values) {
+        std::vector<uint8_t> e_bytes(sizeof(int));
+        std::memcpy(e_bytes.data(), &e, sizeof(int));
+        hash_s.push_back(sha256(e_bytes));
+    }
+    
+    hash_s.push_back(RIGHT_BOUND);
+    std::sort(hash_s.begin(), hash_s.end());
+    
+    std::vector<std::vector<uint8_t>> prefix_s;
+    for (const auto& x : hash_s) {
+        prefix_s.push_back(std::vector<uint8_t>(x.begin(), x.begin() + 4));
+    }
+    
+    BloomFilterADS bf(2048, 0.1, LEFT_BOUND, RIGHT_BOUND, pk, prefix_s);
+    std::cout << "Hash count: " << bf.get_hash_count() << ", Size: " << bf.get_size() << std::endl;
+    std::cout << "VO size: " << bf.vo_size() << std::endl;
+}
+// debug_bf();
+
+/**
+ * 测试基于Bloom Filter的ADS
+ */
+void debug_bf_based_ads() {
+    std::random_device rd;
+    std::mt19937 gen(rd());
+    std::uniform_int_distribution<> dis(1, 5000000);
+    
+    std::vector<int> keys = {1, 2, 3};
+    std::unordered_map<std::vector<uint8_t>, std::vector<std::vector<uint8_t>>, VectorHash> sets;
+    
+    std::vector<uint8_t> pk(32, 0x01);
+    
+    // 生成R和S的随机样本
+    std::vector<int> r_values;
+    for (int i = 0; i < 100; i++) {
+        r_values.push_back(dis(gen));
+    }
+    
+    std::vector<int> s_values;
+    for (int i = 0; i < 1000; i++) {
+        s_values.push_back(dis(gen));
+    }
+    
+    // 生成哈希值
+    std::vector<std::vector<uint8_t>> hash_r;
+    hash_r.push_back(LEFT_BOUND);
+    
+    for (int e : r_values) {
+        std::vector<uint8_t> e_bytes(sizeof(int));
+        std::memcpy(e_bytes.data(), &e, sizeof(int));
+        hash_r.push_back(sha256(e_bytes));
+    }
+    
+    hash_r.push_back(RIGHT_BOUND);
+    std::sort(hash_r.begin(), hash_r.end());
+    
+    std::vector<std::vector<uint8_t>> hash_s;
+    hash_s.push_back(LEFT_BOUND);
+    
+    for (int e : s_values) {
+        std::vector<uint8_t> e_bytes(sizeof(int));
+        std::memcpy(e_bytes.data(), &e, sizeof(int));
+        hash_s.push_back(sha256(e_bytes));
+    }
+    
+    hash_s.push_back(RIGHT_BOUND);
+    std::sort(hash_s.begin(), hash_s.end());
+    
+    // 生成前缀
+    std::vector<std::vector<uint8_t>> prefix_r;
+    for (const auto& x : hash_r) {
+        prefix_r.push_back(std::vector<uint8_t>(x.begin(), x.begin() + 4));
+    }
+    
+    std::vector<std::vector<uint8_t>> prefix_s;
+    for (const auto& x : hash_s) {
+        prefix_s.push_back(std::vector<uint8_t>(x.begin(), x.begin() + 4));
+    }
+    
+    MerkleChainTree mct(hash_s, pk, 4);
+    BloomFilterADS bf(1000, 0.1, LEFT_BOUND, RIGHT_BOUND, pk, prefix_s);
+    
+    std::cout << "Hash count: " << bf.get_hash_count() << ", Size: " << bf.get_size() << ", VO size: " << bf.vo_size() << std::endl;
+    
+    // 搜索相关索引
+    std::set<int> related_idx;
+    
+    // 获取元素在集合中的位置
+    auto get_position = [](const std::vector<uint8_t>& x, const std::vector<std::vector<uint8_t>>& s) -> std::set<int> {
+        for (size_t i = 0; i < s.size() - 1; i++) {
+            if (s[i] == x) {
+                return {static_cast<int>(i)};
+            }
+            else if (s[i] < x && x < s[i + 1]) {
+                return {static_cast<int>(i), static_cast<int>(i + 1)};
+            }
+        }
+        return {};
+    };
+    
+    for (size_t i = 1; i < prefix_r.size() - 1; i++) {
+        if (bf.contains(prefix_r[i])) {
+            auto positions = get_position(prefix_r[i], prefix_s);
+            related_idx.insert(positions.begin(), positions.end());
+        }
+    }
+    
+    std::vector<int> sorted_idx(related_idx.begin(), related_idx.end());
+    std::sort(sorted_idx.begin(), sorted_idx.end());
+    
+    std::cout << "Related indices: ";
+    for (int idx : sorted_idx) {
+        std::cout << idx << " ";
+    }
+    std::cout << std::endl;
+    
+    MCTSubsetVerificationObject mct_vo = mct.generate_subset_verification_object(sorted_idx);
+    std::cout << "MCT VO size: " << mct_vo.vo_size() << std::endl;
+}
+// debug_bf_based_ads();
+
+/**
+ * 分区交集验证对象
+ */
+class PartitionIntersectionVO {
+public:
+    PartitionIntersectionVO() : seg_size(0), idx(-1) {}
+    
+    int vo_size() const {
+        int size = 8 + 32 * 2 + 8;
+        
+        for (const auto& [l, vo] : mct_vo) {
+            size += vo.vo_size() + 8;
+        }
+        
+        size += 8;
+        for (const auto& [l, vo] : bf_vo) {
+            size += vo.vo_size() + 8;
+        }
+        
+        return size;
+    }
+    
+    int seg_size;
+    std::vector<uint8_t> left;
+    std::vector<uint8_t> right;
+    int idx;
+    std::unordered_map<int, MCTSubsetVerificationObject> mct_vo;
+    std::unordered_map<int, BloomFilterADS> bf_vo;
+};
+
+/**
+ * 生成基于Bloom Filter的验证对象
+ */
+std::pair<BloomFilterADS, std::optional<MCTSubsetVerificationObject>>
+generate_bf_based_vo_for_s(
+    const std::vector<std::vector<uint8_t>>& r,
+    const std::vector<std::vector<uint8_t>>& s,
+    int prefix_len,
+    const BloomFilterADS& bf,
+    const MerkleChainTree& mct) {
+    
+    // 生成前缀
+    std::vector<std::vector<uint8_t>> prefix_r;
+    for (const auto& x : r) {
+        prefix_r.push_back(std::vector<uint8_t>(x.begin(), x.begin() + prefix_len));
+    }
+    
+    std::set<int> related_idx;
+    for (const auto& x : prefix_r) {
+        if (!bf.contains(x)) {
+            continue;
+        }
+        
+        // 在s中定位x
+        auto it = std::upper_bound(s.begin(), s.end(), x);
+        int idx = std::distance(s.begin(), it);
+        
+        if (idx >= 1 && idx - 1 < static_cast<int>(s.size()) && 
+            std::vector<uint8_t>(s[idx - 1].begin(), s[idx - 1].begin() + prefix_len) == x) {
+            related_idx.insert(idx - 1);
+        }
+        else {
+            if (idx - 1 >= 0) {
+                related_idx.insert(idx - 1);
+            }
+            if (idx < static_cast<int>(s.size())) {
+                related_idx.insert(idx);
+            }
+        }
+    }
+    
+    // 因为MCT中包含LEFT_BOUND,因此所有集合下标需要+1
+    std::vector<int> sorted_idx;
+    for (int idx : related_idx) {
+        sorted_idx.push_back(idx + 1);
+    }
+    std::sort(sorted_idx.begin(), sorted_idx.end());
+    
+    std::optional<MCTSubsetVerificationObject> mct_vo;
+    if (!sorted_idx.empty()) {
+        mct_vo = mct.generate_subset_verification_object(sorted_idx);
+    }
+    
+    return std::make_pair(bf, mct_vo);
+}
+
+/**
+ * 计算为了在集合s中区分元素x所需要的最小长度前缀
+ */
+int calculate_min_prefix_len(
+    const std::vector<std::vector<uint8_t>>& s,
+    const std::vector<uint8_t>& x,
+    const std::vector<int>& prefix_lens) {
+    
+    auto it = std::upper_bound(s.begin(), s.end(), x);
+    int i = std::distance(s.begin(), it);
+    
+    int p = prefix_lens.back();
+    
+    for (int l : prefix_lens) {
+        bool prefix_diff_prev = false;
+        bool prefix_diff_next = false;
+        
+        if (i >= 0 && i < static_cast<int>(s.size()) && 
+            x.size() >= l && s[i].size() >= l &&
+            std::vector<uint8_t>(x.begin(), x.begin() + l) == 
+            std::vector<uint8_t>(s[i].begin(), s[i].begin() + l)) {
+            continue;
+        }
+        
+        if (i - 1 >= 0 && i - 1 < static_cast<int>(s.size()) && 
+            x.size() >= l && s[i - 1].size() >= l &&
+            std::vector<uint8_t>(x.begin(), x.begin() + l) == 
+            std::vector<uint8_t>(s[i - 1].begin(), s[i - 1].begin() + l)) {
+            continue;
+        }
+        
+        // 比较x与s[i-1]、s[i]的前缀，如果与两侧均不等，则返回当前前缀长度
+        p = l;
+        break;
+    }
+    
+    return p;
+}
+
+/**
+ * 生成分区ADS
+ * 1. 对于一个集合S，计算分区数 P = |S|/SegSize （向上取整）。
+ * 2. 将S依次划分为P个区间，每个区间是一个左闭右开区间。
+ * 3. 为每一个区间构建MCT树, 签名密钥是 sk || 左边界 || 右边界了, MCT树记录左右边界信息.
+ * 4. 为每一个区间构建Bloom Filter, 存储该区间内出现的所有集合元素; 为Bloom Filter生成签名, 签名密钥是 sk || 左边界 || 右边界.
+ */
+std::unordered_map<std::vector<uint8_t>, std::vector<PartitionADS>, VectorHash>
+generate_partition_ads(
+    const std::unordered_map<std::vector<uint8_t>, std::vector<std::vector<uint8_t>>, VectorHash>& dataset,
+    const std::vector<uint8_t>& pk,
+    const std::vector<int>& prefix_lens,
+    int seg_size,
+    float false_positive_rate) {
+    
+    std::unordered_map<std::vector<uint8_t>, std::vector<PartitionADS>, VectorHash> ads;
+    
+    for (const auto& [keyword, s] : dataset) {
+        std::cout << "正在为关键词 ";
+        for (const auto& byte : keyword) {
+            std::cout << static_cast<int>(byte) << " ";
+        }
+        std::cout << "生成ADS" << std::endl;
+        
+        std::vector<std::vector<uint8_t>> hash_s = s;
+        // 将s按照seg_size分隔成若干个区间
+        std::sort(hash_s.begin(), hash_s.end());
+        
+        std::vector<int> pivots;
+        for (int i = 0; i < static_cast<int>(hash_s.size()); i += seg_size) {
+            pivots.push_back(i);
+        }
+        
+        std::vector<PartitionADS> s_ads;
+        
+        for (size_t i = 0; i < pivots.size(); i++) {
+            std::vector<uint8_t> left, right;
+            std::vector<std::vector<uint8_t>> s_part;
+            
+            if (i == 0) {
+                left = LEFT_BOUND;
+            } else {
+                left = hash_s[pivots[i]];
+            }
+            
+            if (i < pivots.size() - 1) { // 非最后一个区间
+                right = hash_s[pivots[i + 1]];
+                s_part.assign(hash_s.begin() + pivots[i], hash_s.begin() + pivots[i + 1]);
+            } else {
+                right = RIGHT_BOUND;
+                s_part.assign(hash_s.begin() + pivots[i], hash_s.end());
+            }
+            
+            std::cout << "  正在处理分区: " << i << " ";
+            for (const auto& byte : left) {
+                printf("%02x", byte);
+            }
+            std::cout << " - ";
+            for (const auto& byte : right) {
+                printf("%02x", byte);
+            }
+            std::cout << std::endl;
+            
+            // 为区间s_part集合构建MCT验证数据结构
+            std::vector<uint8_t> size_bytes = int_to_bytes(s_part.size());
+            std::vector<uint8_t> idx_bytes = int_to_bytes(i);
+            
+            std::vector<uint8_t> sk = pk;
+            sk.insert(sk.end(), keyword.begin(), keyword.end());
+            sk.push_back('|');
+            sk.insert(sk.end(), size_bytes.begin(), size_bytes.end());
+            sk.push_back('|');
+            sk.insert(sk.end(), left.begin(), left.end());
+            sk.push_back('|');
+            sk.insert(sk.end(), right.begin(), right.end());
+            sk.insert(sk.end(), idx_bytes.begin(), idx_bytes.end());
+            
+            std::unordered_map<int, MerkleChainTree> mct;
+            for (int l : prefix_lens) {
+                std::vector<std::vector<uint8_t>> extended_s_part;
+                extended_s_part.push_back(LEFT_BOUND);
+                extended_s_part.insert(extended_s_part.end(), s_part.begin(), s_part.end());
+                extended_s_part.push_back(RIGHT_BOUND);
+                
+                mct[l] = MerkleChainTree(extended_s_part, sk, l);
+            }
+            
+            // 为区间s_part集合构建BF验证数据结构
+            std::unordered_map<int, BloomFilterADS> bf;
+            for (int l : prefix_lens) {
+                std::vector<std::vector<uint8_t>> prefix_s_part;
+                for (const auto& x : s_part) {
+                    prefix_s_part.push_back(std::vector<uint8_t>(x.begin(), x.begin() + l));
+                }
+                
+                bf[l] = BloomFilterADS(std::min(seg_size, static_cast<int>(s_part.size())), 
+                                     false_positive_rate, left, right, sk, prefix_s_part);
+            }
+            
+            PartitionADS ads_part;
+            ads_part.left_bound = left;
+            ads_part.right_bound = right;
+            ads_part.bf = bf;
+            ads_part.mct = mct;
+            ads_part.idx = i;
+            s_ads.push_back(ads_part);
+        }
+        
+        ads[keyword] = s_ads;
+    }
+    
+    return ads;
+}
+
+/**
+ * 为R生成分区交集验证对象的R部分
+ */
+std::vector<PartitionIntersectionVO> generate_partition_intersection_vo_r_part(
+    const std::vector<PartitionADS>& r_ads,
+    const std::vector<std::vector<uint8_t>>& r,
+    const std::vector<std::vector<uint8_t>>& s,
+    const std::vector<int>& prefix_lens) {
+    
+    std::cout << "正在为R生成存在性证明.." << std::endl;
+    
+    // 对于R的每一个分区R_i, 提取S中对应分区的子集S_i, 为R_i中的每一个元素x计算所需的最小前缀长度L(x), 
+    // 根据L(x)为R中该分区的所有元素生成存在性证明VO.R[i].
+    std::vector<PartitionIntersectionVO> r_vo;
+    
+    for (const auto& part : r_ads) {
+        std::cout << "  正在处理分区 " << part.idx << " ";
+        for (const auto& byte : part.left_bound) {
+            printf("%02x", byte);
+        }
+        std::cout << " - ";
+        for (const auto& byte : part.right_bound) {
+            printf("%02x", byte);
+        }
+        std::cout << std::endl;
+        
+        // 分区集合
+        std::vector<std::vector<uint8_t>> r_part;
+        for (const auto& x : r) {
+            if (x >= part.left_bound && x < part.right_bound) {
+                r_part.push_back(x);
+            }
+        }
+        
+        // 提取S中对应分区子集s_part
+        std::vector<std::vector<uint8_t>> s_part;
+        if (part.left_bound == LEFT_BOUND && part.right_bound == RIGHT_BOUND) {
+            s_part = s;
+        } else {
+            for (const auto& x : s) {
+                if (x >= part.left_bound && x < part.right_bound) {
+                    s_part.push_back(x);
+                }
+            }
+        }
+        
+        // 计算R_i中每一个元素的最小前缀长度
+        std::vector<int> r_lens;
+        for (const auto& x : r_part) {
+            r_lens.push_back(calculate_min_prefix_len(s_part, x, prefix_lens));
+        }
+        
+        // 计算交集
+        std::set<std::vector<uint8_t>, VectorCompare> result;
+        for (const auto& x : r_part) {
+            if (std::find(s_part.begin(), s_part.end(), x) != s_part.end()) {
+                result.insert(x);
+            }
+        }
+        
+        // 出现在交集中的元素前缀长度必须为32
+        for (size_t i = 0; i < r_part.size(); i++) {
+            if (result.find(r_part[i]) != result.end()) {
+                r_lens[i] = 32;
+            }
+        }
+        
+        if (!r_lens.empty()) {
+            std::cout << "    计算前缀情况：最小前缀长度为：" << *std::min_element(r_lens.begin(), r_lens.end())
+                      << "，最大前缀长度为" << *std::max_element(r_lens.begin(), r_lens.end()) << std::endl;
+        }
+        std::cout << "    r_part_size = " << r_part.size() << std::endl;
+        
+        // 为R_i中的每一个元素x生成存在性证明VO.R[i]
+        PartitionIntersectionVO r_part_vo;
+        r_part_vo.left = part.left_bound;
+        r_part_vo.right = part.right_bound;
+        r_part_vo.seg_size = r_part.size();
+        r_part_vo.idx = part.idx;
+        
+        // 基于MCT生成存在性证明
+        for (int l : prefix_lens) {
+            std::cout << "    正在处理前缀长度:" << l << std::endl;
+            
+            if (std::count(r_lens.begin(), r_lens.end(), l) == 0) {
+                std::cout << "    前缀长度" << l << "未使用，跳过" << std::endl;
+                continue;
+            }
+            
+            std::vector<int> r_l;
+            for (size_t i = 0; i < r_lens.size(); i++) {
+                if (r_lens[i] == l) {
+                    r_l.push_back(i + 1); // +1因为构建ADS时自动加入了LEFT_BOUND
+                }
+            }
+            
+            auto mct_it = part.mct.find(l);
+            if (mct_it == part.mct.end()) {
+                std::cerr << "Error: Missing MCT for prefix length " << l << std::endl;
+                continue;
+            }
+            
+            r_part_vo.mct_vo[l] = mct_it->second.generate_subset_verification_object(r_l);
+            
+            std::cout << "    VO规模: " << r_part_vo.mct_vo[l].vo_size() << std::endl;
+        }
+        
+        r_vo.push_back(r_part_vo);
+    }
+    
+    return r_vo;
+}
+
+/**
+ * 为S生成分区交集验证对象的S部分
+ */
+std::vector<PartitionIntersectionVO> generate_partition_intersection_vo_s_part(
+    const std::vector<PartitionADS>& s_ads,
+    const std::vector<std::vector<uint8_t>>& r,
+    const std::vector<std::vector<uint8_t>>& s,
+    const std::vector<int>& prefix_lens) {
+    
+    std::cout << "正在为S生成存在性证明.." << std::endl;
+    
+    /*
+    对于S的每一个分区S_i, 提取R中对应分区的子集R_i, 按以下两个模式生成验证对象:
+        + 基于MCT的方式为R_i和S_i交集生成S_i的验证对象vo_mct.
+        + 基于Bloom Filter的方式为R_i和S_i的交集生成验证对象vo_bf.
+            * 将bf内容以及bf的签名加入vo_bf.
+            * 根据R_i中所有bf汇报为阳性的元素构成子集,为该子集生成mct验证对象.
+        + 比较vo_mct和vo_bf的大小, 选择较小的一个作为VO.S[i] 
+    */
+    
+    std::vector<PartitionIntersectionVO> s_vo;
+    
+    for (const auto& part : s_ads) {
+        std::cout << "  正在处理分区" << part.idx << " ";
+        for (const auto& byte : part.left_bound) {
+            printf("%02x", byte);
+        }
+        std::cout << " - ";
+        for (const auto& byte : part.right_bound) {
+            printf("%02x", byte);
+        }
+        std::cout << std::endl;
+        
+        // 分区集合
+        std::vector<std::vector<uint8_t>> s_part, r_part;
+        
+        if (part.left_bound == LEFT_BOUND && part.right_bound == RIGHT_BOUND) {
+            s_part = s;
+            r_part = r;
+        } else {
+            for (const auto& x : s) {
+                if (x >= part.left_bound && x < part.right_bound) {
+                    s_part.push_back(x);
+                }
+            }
+            
+            for (const auto& x : r) {
+                if (x >= part.left_bound && x < part.right_bound) {
+                    r_part.push_back(x);
+                }
+            }
+        }
+        
+        if (r_part.empty()) {
+            std::cout << "    对应R分区不包含有效元素,跳过" << std::endl;
+            continue;
+        }
+        
+        // 计算R_i中每一个元素的最小前缀长度
+        std::vector<int> r_lens;
+        for (const auto& x : r_part) {
+            r_lens.push_back(calculate_min_prefix_len(s_part, x, prefix_lens));
+        }
+        
+        PartitionIntersectionVO s_part_vo;
+        s_part_vo.seg_size = s_part.size();
+        s_part_vo.idx = part.idx;
+        s_part_vo.left = part.left_bound;
+        s_part_vo.right = part.right_bound;
+        
+        for (int l : prefix_lens) {
+            std::cout << "    正在处理前缀长度:" << l << std::endl;
+            
+            if (std::count(r_lens.begin(), r_lens.end(), l) == 0) {
+                std::cout << "    前缀长度" << l << "未使用，跳过" << std::endl;
+                continue;
+            }
+            
+            std::vector<int> r_l;
+            for (size_t i = 0; i < r_lens.size(); i++) {
+                if (r_lens[i] == l) {
+                    r_l.push_back(i);
+                }
+            }
+            
+            std::cout << "    前缀子集长度:" << r_l.size() << std::endl;
+            
+            std::set<int> s_l;
+            for (int x : r_l) {
+                const std::vector<uint8_t>& e = r_part[x];
+                auto it = std::upper_bound(s_part.begin(), s_part.end(), e);
+                int s_idx = std::distance(s_part.begin(), it) - 1;
+                
+                if (s_idx >= 0 && s_idx < static_cast<int>(s_part.size()) && s_part[s_idx] == e) {
+                    s_l.insert(s_idx);
+                } else {
+                    if (s_idx >= 0 && s_idx < static_cast<int>(s_part.size())) {
+                        s_l.insert(s_idx);
+                    }
+                    if (s_idx + 1 < static_cast<int>(s_part.size())) {
+                        s_l.insert(s_idx + 1);
+                    }
+                }
+            }
+            
+            std::vector<int> s_l_vec;
+            for (int idx : s_l) {
+                s_l_vec.push_back(idx + 1); // +1因为构建ADS时自动加入了LEFT_BOUND
+            }
+            std::sort(s_l_vec.begin(), s_l_vec.end());
+            
+            // 生成MCT版本的VO
+            auto mct_it = part.mct.find(l);
+            if (mct_it == part.mct.end()) {
+                std::cerr << "Error: Missing MCT for prefix length " << l << std::endl;
+                continue;
+            }
+            
+            MCTSubsetVerificationObject s_mct_vo = mct_it->second.generate_subset_verification_object(s_l_vec);
+            int cost_mct_vo = s_mct_vo.vo_size();
+            
+            // 生成BF版本的VO
+            auto bf_it = part.bf.find(l);
+            if (bf_it == part.bf.end()) {
+                std::cerr << "Error: Missing BF for prefix length " << l << std::endl;
+                continue;
+            }
+            
+            auto s_bf_vo = generate_bf_based_vo_for_s(r_part, s_part, l, bf_it->second, mct_it->second);
+            
+            // 计算BF版本VO的成本
+            int cost_bf_vo = s_bf_vo.first.vo_size();
+            if (s_bf_vo.second.has_value()) {
+                cost_bf_vo += s_bf_vo.second.value().vo_size();
+            }
+            
+            std::cout << "    Cost MCT: " << cost_mct_vo << ", Cost VO: " << cost_bf_vo 
+                      << " (" << s_bf_vo.first.vo_size() << ")" << std::endl;
+            
+            // 选择成本较低的方式
+            if (cost_mct_vo <= cost_bf_vo) {
+                s_part_vo.mct_vo[l] = s_mct_vo;
+            } else {
+                s_part_vo.bf_vo[l] = s_bf_vo.first;
+                if (s_bf_vo.second.has_value()) {
+                    s_part_vo.mct_vo[l] = s_bf_vo.second.value();
+                }
+            }
+        }
+        
+        s_vo.push_back(s_part_vo);
+    }
+    
+    return s_vo;
+}
+
+/**
+ * 生成分区交集验证对象
+ */
+std::pair<std::vector<PartitionIntersectionVO>, std::vector<PartitionIntersectionVO>>
+generate_partition_intersection_vo(
+    const std::unordered_map<std::vector<uint8_t>, std::vector<std::vector<uint8_t>>, VectorHash>& dataset,
+    const std::unordered_map<std::vector<uint8_t>, std::vector<PartitionADS>, VectorHash>& ads,
+    const std::vector<uint8_t>& r_key,
+    const std::vector<uint8_t>& s_key,
+    const std::vector<int>& prefix_lens) {
+    
+    const std::vector<std::vector<uint8_t>>& r = dataset.at(r_key);
+    const std::vector<std::vector<uint8_t>>& s = dataset.at(s_key);
+    const std::vector<PartitionADS>& r_ads = ads.at(r_key);
+    const std::vector<PartitionADS>& s_ads = ads.at(s_key);
+    
+    // 生成R的存在性证明
+    std::vector<PartitionIntersectionVO> r_vo = generate_partition_intersection_vo_r_part(r_ads, r, s, prefix_lens);
+    
+    // 生成S的存在性证明
+    std::vector<PartitionIntersectionVO> s_vo = generate_partition_intersection_vo_s_part(s_ads, r, s, prefix_lens);
+    
+    return std::make_pair(r_vo, s_vo);
+}
+
+/**
+ * 测试分区交集验证功能
+ */
+void test_partition_intersection() {
+    std::cout << "=== 开始测试分区交集验证 ===" << std::endl;
+    
+    // 创建随机数生成器
+    std::random_device rd;
+    std::mt19937 gen(rd());
+    std::uniform_int_distribution<> dis(1, 500000);
+    
+    // 生成测试数据集
+    std::vector<uint8_t> key1 = {1};
+    std::vector<uint8_t> key2 = {2};
+    
+    std::unordered_map<std::vector<uint8_t>, std::vector<std::vector<uint8_t>>, VectorHash> sets;
+    
+    // 生成小集合（100个元素）
+    std::cout << "生成集合 R (100 个元素)..." << std::endl;
+    std::vector<std::vector<uint8_t>> r_elements;
+    for (int i = 0; i < 100; i++) {
+        int val = dis(gen);
+        std::vector<uint8_t> e_bytes(sizeof(int));
+        std::memcpy(e_bytes.data(), &val, sizeof(int));
+        r_elements.push_back(sha256(e_bytes)); // 使用哈希来模拟实际数据
+    }
+    
+    // 生成大集合（1000个元素）
+    std::cout << "生成集合 S (1000 个元素)..." << std::endl;
+    std::vector<std::vector<uint8_t>> s_elements;
+    for (int i = 0; i < 1000; i++) {
+        int val = dis(gen);
+        std::vector<uint8_t> e_bytes(sizeof(int));
+        std::memcpy(e_bytes.data(), &val, sizeof(int));
+        s_elements.push_back(sha256(e_bytes)); // 使用哈希来模拟实际数据
+    }
+    
+    // 创建故意的交集（约10个元素）
+    std::cout << "创建交集（约10个元素）..." << std::endl;
+    for (int i = 0; i < 10; i++) {
+        if (i < r_elements.size() && i < s_elements.size()) {
+            r_elements[i] = s_elements[i];
+        }
+    }
+    
+    // 对生成的集合排序
+    std::sort(r_elements.begin(), r_elements.end());
+    std::sort(s_elements.begin(), s_elements.end());
+    
+    // 计算实际交集
+    std::set<std::vector<uint8_t>, VectorCompare> actual_intersection;
+    for (const auto& elem : r_elements) {
+        if (std::binary_search(s_elements.begin(), s_elements.end(), elem)) {
+            actual_intersection.insert(elem);
+        }
+    }
+    
+    std::cout << "实际交集大小: " << actual_intersection.size() << " 个元素" << std::endl;
+    
+    // 添加到数据集
+    sets[key1] = r_elements;
+    sets[key2] = s_elements;
+    
+    // 设置参数
+    std::vector<int> prefix_lens = {4, 32};
+    std::vector<uint8_t> pk(32, 0x01);  // 简单密钥
+    int seg_size = 200;  // 分区大小
+    float false_positive_rate = 0.1;  // Bloom Filter 误报率
+    
+    // 生成分区 ADS
+    std::cout << "生成分区 ADS..." << std::endl;
+    auto start_time = std::chrono::high_resolution_clock::now();
+    
+    auto ads = generate_partition_ads(sets, pk, prefix_lens, seg_size, false_positive_rate);
+    
+    auto ads_time = std::chrono::high_resolution_clock::now();
+    auto ads_duration = std::chrono::duration_cast<std::chrono::milliseconds>(ads_time - start_time);
+    
+    std::cout << "分区 ADS 生成完成，耗时: " << ads_duration.count() << " 毫秒" << std::endl;
+    
+    // 生成分区交集验证对象
+    std::cout << "生成分区交集验证对象..." << std::endl;
+    
+    auto vo_start_time = std::chrono::high_resolution_clock::now();
+    
+    auto vo_pair = generate_partition_intersection_vo(sets, ads, key1, key2, prefix_lens);
+    
+    auto vo_time = std::chrono::high_resolution_clock::now();
+    auto vo_duration = std::chrono::duration_cast<std::chrono::milliseconds>(vo_time - vo_start_time);
+    
+    std::cout << "分区交集验证对象生成完成，耗时: " << vo_duration.count() << " 毫秒" << std::endl;
+    
+    // 分解验证对象
+    const auto& r_vo = vo_pair.first;
+    const auto& s_vo = vo_pair.second;
+    
+    // 计算验证对象的大小
+    int total_vo_size = 0;
+    
+    std::cout << "R 部分验证对象大小:" << std::endl;
+    for (const auto& part_vo : r_vo) {
+        int part_size = part_vo.vo_size();
+        total_vo_size += part_size;
+        std::cout << "  分区 " << part_vo.idx << ": " << part_size << " 字节" << std::endl;
+    }
+    
+    std::cout << "S 部分验证对象大小:" << std::endl;
+    for (const auto& part_vo : s_vo) {
+        int part_size = part_vo.vo_size();
+        total_vo_size += part_size;
+        std::cout << "  分区 " << part_vo.idx << ": " << part_size << " 字节" << std::endl;
+    }
+    
+    std::cout << "总验证对象大小: " << total_vo_size << " 字节" << std::endl;
+    
+    // 在这里可以添加验证代码
+    // 注意：为了完整性，您需要实现verify_partition_intersection_vo_r_part和verify_partition_intersection_vo_s_part
+    // 以及verify_intersection_result函数才能完成验证
+    
+    std::cout << "=== 分区交集验证测试完成 ===" << std::endl;
+}
+
+
 int main() {
     
     
@@ -1917,7 +2752,14 @@ int main() {
     // test_random_set_intersection();
     
     // 测试性能
-    test_performance();
+    // test_performance();
+
+        // 测试分区交集验证
+    try {
+        test_partition_intersection();
+    } catch (const std::exception& e) {
+        std::cerr << "测试分区交集验证时出错: " << e.what() << std::endl;
+    }
     
     return 0;
 }
